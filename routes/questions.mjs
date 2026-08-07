@@ -4,11 +4,29 @@ import answerRouter from "./answers.mjs";
 
 const questionRouter = Router();
 
+const TITLE_MAX_LENGTH = 100;
+const DESCRIPTION_MAX_LENGTH = 500;
+const CATEGORY_MAX_LENGTH = 50;
+
+function isValidQuestionData(title, description, category) {
+  return (
+    typeof title === "string" &&
+    typeof description === "string" &&
+    typeof category === "string" &&
+    title.trim() !== "" &&
+    description.trim() !== "" &&
+    category.trim() !== "" &&
+    title.length <= TITLE_MAX_LENGTH &&
+    description.length <= DESCRIPTION_MAX_LENGTH &&
+    category.length <= CATEGORY_MAX_LENGTH
+  );
+}
+
 //post : Create a new question
 questionRouter.post("/", async (req, res) => {
   const { title, description, category } = req.body;
 
-  if (!title || !description || !category) {
+  if (!isValidQuestionData(title, description, category)) {
     return res.status(400).json({ message: "Invalid request data." });
   }
 
@@ -101,7 +119,7 @@ questionRouter.put("/:id", async (req, res) => {
   const { id } = req.params;
   const { title, description, category } = req.body;
 
-  if (!title || !description || !category) {
+  if (!isValidQuestionData(title, description, category)) {
     return res.status(400).json({ message: "Invalid request data." });
   }
 
@@ -123,22 +141,44 @@ questionRouter.put("/:id", async (req, res) => {
 });
 
 //delete : Delete a question by id
+// ใช้ Transaction เพื่อลบคำตอบและ votes ที่เกี่ยวข้องออกไปด้วย (cascading delete)
 questionRouter.delete("/:id", async (req, res) => {
   const { id } = req.params;
+  const client = await connectionPool.connect();
 
   try {
-    const deletedQuestion = await connectionPool.query(
-      "DELETE FROM questions WHERE id = $1 RETURNING *",
+    await client.query("BEGIN");
+
+    const question = await client.query(
+      "SELECT * FROM questions WHERE id = $1",
       [id]
     );
-    if (deletedQuestion.rows.length === 0) {
+    if (question.rows.length === 0) {
+      await client.query("ROLLBACK");
       return res.status(404).json({ message: "Question not found." });
     }
+
+    // ลบ votes ของคำตอบ → ลบคำตอบ → ลบ votes ของคำถาม → ลบคำถาม
+    await client.query(
+      `DELETE FROM answer_votes
+       WHERE answer_id IN (SELECT id FROM answers WHERE question_id = $1)`,
+      [id]
+    );
+    await client.query("DELETE FROM answers WHERE question_id = $1", [id]);
+    await client.query("DELETE FROM question_votes WHERE question_id = $1", [
+      id,
+    ]);
+    await client.query("DELETE FROM questions WHERE id = $1", [id]);
+
+    await client.query("COMMIT");
     return res.status(200).json({
       message: "Question post has been deleted successfully.",
     });
   } catch (error) {
+    await client.query("ROLLBACK");
     return res.status(500).json({ message: "Unable to delete question." });
+  } finally {
+    client.release();
   }
 });
 

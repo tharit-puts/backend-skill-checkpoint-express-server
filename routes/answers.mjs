@@ -9,7 +9,7 @@ answerRouter.post("/", async (req, res) => {
   const { questionId } = req.params;
   const { content } = req.body;
 
-  if (!content) {
+  if (!content || typeof content !== "string" || content.length > 300) {
     return res.status(400).json({ message: "Invalid request data." });
   }
 
@@ -64,21 +64,38 @@ answerRouter.get("/", async (req, res) => {
 //delete : Delete an answer of a question
 answerRouter.delete("/:answerId", async (req, res) => {
   const { questionId, answerId } = req.params;
+  const client = await connectionPool.connect();
 
   try {
-    const deletedAnswer = await connectionPool.query(
+    await client.query("BEGIN");
+
+    const answer = await client.query(
+      "SELECT * FROM answers WHERE question_id = $1 AND id = $2",
+      [questionId, answerId]
+    );
+    if (answer.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ message: "Answer not found." });
+    }
+
+    await client.query("DELETE FROM answer_votes WHERE answer_id = $1", [
+      answerId,
+    ]);
+    const deletedAnswer = await client.query(
       "DELETE FROM answers WHERE question_id = $1 AND id = $2 RETURNING *",
       [questionId, answerId]
     );
-    if (deletedAnswer.rows.length === 0) {
-      return res.status(404).json({ message: "Answer not found." });
-    }
+
+    await client.query("COMMIT");
     return res.status(200).json({
       message: "Answer deleted successfully.",
       data: deletedAnswer.rows[0],
     });
   } catch (error) {
+    await client.query("ROLLBACK");
     return res.status(500).json({ message: "Unable to delete answer." });
+  } finally {
+    client.release();
   }
 });
 

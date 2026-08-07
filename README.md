@@ -27,10 +27,11 @@ RESTful API สำหรับระบบถาม-ตอบ (Q&A) พัฒน
 
 - **จัดการคำถาม** — สร้าง ดูทั้งหมด ดูรายตัว แก้ไข และลบคำถาม
 - **ค้นหาคำถาม** — ค้นหาจาก title หรือ category แบบ partial match (ไม่สนตัวพิมพ์เล็ก-ใหญ่)
-- **จัดการคำตอบ** — สร้างและดูคำตอบของแต่ละคำถาม รวมถึงลบคำตอบ
+- **จัดการคำตอบ** — สร้างและดูคำตอบของแต่ละคำถาม รวมถึงลบคำตอบ (ความยาวไม่เกิน 300 ตัวอักษร)
+- **Cascading delete** — เมื่อลบคำถาม คำตอบและ votes ที่เกี่ยวข้องจะถูกลบตามด้วย Database Transaction
 - **ระบบโหวต** — โหวตคำถามและคำตอบด้วยค่า `1` (upvote) หรือ `-1` (downvote)
 - **จัดกลุ่ม route ด้วย Express Router** — แยก router ตาม resource พร้อม nested router สำหรับ answers
-- **Validation และ error handling** — ตรวจสอบข้อมูลก่อนเข้าถึงฐานข้อมูล และคืน HTTP status code ที่เหมาะสม
+- **Validation และ error handling** — ตรวจสอบความครบถ้วนและความยาวของข้อมูลก่อนเข้าถึงฐานข้อมูล
 
 ---
 
@@ -169,6 +170,15 @@ Base URL: `http://localhost:4000`
 
 ทุก endpoint ที่รับ body ต้องส่งเป็น JSON พร้อม header `Content-Type: application/json`
 
+### ข้อจำกัดความยาวของข้อมูล
+
+| ฟิลด์ | ความยาวสูงสุด |
+| --- | --- |
+| `title` | 100 ตัวอักษร |
+| `description` | 500 ตัวอักษร |
+| `category` | 50 ตัวอักษร |
+| `content` (คำตอบ) | 300 ตัวอักษร |
+
 ### Questions
 
 #### สร้างคำถามใหม่
@@ -192,7 +202,7 @@ POST /questions
 | Status | เงื่อนไข | Response |
 | --- | --- | --- |
 | `201 Created` | สร้างสำเร็จ | `{ "message": "Question created successfully.", "data": { ... } }` |
-| `400 Bad Request` | ข้อมูลไม่ครบ | `{ "message": "Invalid request data." }` |
+| `400 Bad Request` | ข้อมูลไม่ครบ หรือเกินความยาวที่กำหนด | `{ "message": "Invalid request data." }` |
 | `500 Internal Server Error` | ฐานข้อมูลผิดพลาด | `{ "message": "Unable to create question." }` |
 
 ---
@@ -275,7 +285,7 @@ PUT /questions/:id
 | Status | เงื่อนไข | Response |
 | --- | --- | --- |
 | `200 OK` | แก้ไขสำเร็จ | `{ "message": "Question updated successfully.", "data": { ... } }` |
-| `400 Bad Request` | ข้อมูลไม่ครบ | `{ "message": "Invalid request data." }` |
+| `400 Bad Request` | ข้อมูลไม่ครบ หรือเกินความยาวที่กำหนด | `{ "message": "Invalid request data." }` |
 | `404 Not Found` | ไม่พบคำถาม | `{ "message": "Question not found." }` |
 | `500 Internal Server Error` | ฐานข้อมูลผิดพลาด | `{ "message": "Unable to update question." }` |
 
@@ -287,11 +297,20 @@ PUT /questions/:id
 DELETE /questions/:id
 ```
 
+เมื่อลบคำถาม API จะใช้ **Database Transaction** เพื่อลบข้อมูลที่เกี่ยวข้องออกไปด้วยตามลำดับนี้:
+
+1. `answer_votes` ของคำตอบทั้งหมดภายใต้คำถามนั้น
+2. `answers` ของคำถามนั้น
+3. `question_votes` ของคำถามนั้น
+4. `questions` เอง
+
+ถ้าขั้นตอนใดล้มเหลวทั้งชุดจะถูก `ROLLBACK` เพื่อไม่ให้ข้อมูลค้างครึ่งทาง
+
 **Responses**
 
 | Status | เงื่อนไข | Response |
 | --- | --- | --- |
-| `200 OK` | ลบสำเร็จ | `{ "message": "Question post has been deleted successfully." }` |
+| `200 OK` | ลบสำเร็จ (รวมคำตอบและ votes ที่เกี่ยวข้อง) | `{ "message": "Question post has been deleted successfully." }` |
 | `404 Not Found` | ไม่พบคำถาม | `{ "message": "Question not found." }` |
 | `500 Internal Server Error` | ฐานข้อมูลผิดพลาด | `{ "message": "Unable to delete question." }` |
 
@@ -318,7 +337,7 @@ POST /questions/:questionId/answers
 | Status | เงื่อนไข | Response |
 | --- | --- | --- |
 | `201 Created` | สร้างสำเร็จ | `{ "message": "Answer created successfully.", "data": { ... } }` |
-| `400 Bad Request` | ไม่ส่ง `content` | `{ "message": "Invalid request data." }` |
+| `400 Bad Request` | ไม่ส่ง `content` หรือยาวเกิน 300 ตัวอักษร | `{ "message": "Invalid request data." }` |
 | `404 Not Found` | ไม่พบคำถาม | `{ "message": "Question not found." }` |
 | `500 Internal Server Error` | ฐานข้อมูลผิดพลาด | `{ "message": "Unable to create answer." }` |
 
@@ -486,7 +505,11 @@ POST /questions/:questionId/answers/:answerId/votes
 
 ### การ validate เกิดขึ้นก่อนเข้าถึงฐานข้อมูล
 
-ทุก handler ตรวจสอบความถูกต้องของ input ก่อนยิง query เพื่อให้คืน `400` ได้อย่างถูกต้อง แทนที่จะปล่อยให้ query ล้มเหลวแล้วกลายเป็น `500`
+ทุก handler ตรวจสอบความถูกต้องของ input ก่อนยิง query เพื่อให้คืน `400` ได้อย่างถูกต้อง แทนที่จะปล่อยให้ query ล้มเหลวแล้วกลายเป็น `500` รวมถึงการจำกัดความยาวของ `title`, `description`, `category`, และ `content`
+
+### Cascading delete ด้วย Database Transaction
+
+การลบคำถามใช้ `BEGIN` / `COMMIT` / `ROLLBACK` ผ่าน client จาก connection pool เพื่อให้คำตอบและ votes ที่เกี่ยวข้องถูกลบพร้อมกันใน transaction เดียว อีกทางเลือกหนึ่งคือตั้งค่า Foreign Key เป็น `ON DELETE CASCADE` ที่ระดับฐานข้อมูล แต่โปรเจกต์นี้เลือกจัดการที่ฝั่งแอปพลิเคชันเพื่อให้เห็นลำดับการลบชัดเจน
 
 ### การตรวจว่ามีข้อมูลอยู่จริงก่อนคืน 404
 
